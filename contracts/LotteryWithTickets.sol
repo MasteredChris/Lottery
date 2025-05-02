@@ -7,9 +7,16 @@ contract LotteryWithTickets {
     // Array dei biglietti; ogni biglietto corrisponde all'indirizzo dell'acquirente.
     // Se un utente acquista più biglietti, il suo indirizzo apparirà più volte.
     address[] public tickets;
+
+    // Pull-payment mapping per prevenire DoS su transfer
+    mapping(address => uint256) public pendingWithdrawals;
     
     // Prezzo di un singolo biglietto (0.01 ether)
     uint public ticketPrice = 0.01 ether;
+
+    //Eventi
+    event WinnerSelected(address indexed winner, uint256 prize);
+    event Withdrawal(address indexed user, uint256 amount);
 
     // Il costruttore imposta il manager al momento del deploy
     constructor() {
@@ -48,24 +55,54 @@ contract LotteryWithTickets {
 
     /**
      * @dev Funzione per scegliere il vincitore.
-     * Solo il manager può chiamarla; seleziona un biglietto a caso, trasferisce l'intero saldo
-     * del contratto al vincitore e resetta l'array dei biglietti per la prossima edizione.
+     * Solo il manager può chiamarla; seleziona un biglietto a caso, salva l'intero saldo
+     * del contratto per il vincitore e resetta l'array dei biglietti per la prossima edizione.
      */
     function pickWinner() public restricted {
         require(tickets.length > 0, "Non ci sono biglietti acquistati");
         uint index = random() % tickets.length;
         address winner = tickets[index];
-
-        payable(winner).transfer(address(this).balance);
-
         // Reset dei biglietti per una nuova edizione della lotteria
         tickets = new address[](0);
+
+        //Salva il montepremi per poi essere ritirato in modo sicuro
+        uint256 prize = address(this).balance;
+        pendingWithdrawals[winner] += prize;
+        emit WinnerSelected(winner, prize);
+
+        //payable(winner).transfer(address(this).balance); NON SICURA
+
+        
     }
+
+    /**
+     * @dev Permette al vincitore di ritirare i fondi in modo sicuro
+     */
+    function withdraw() public {
+        uint256 amount = pendingWithdrawals[msg.sender];
+        require(amount > 0, "Nessun fondo da prelevare");
+        pendingWithdrawals[msg.sender] = 0;
+
+        (bool success, ) = msg.sender.call{value: amount}("");
+        require(success, "Ritiro fallito");
+
+        emit Withdrawal(msg.sender, amount);
+    }
+
 
     /**
      * @dev Funzione per visualizzare i biglietti acquistati.
      */
     function getTickets() public view returns (address[] memory) {
         return tickets;
+    }
+
+    // Gestione ricezione ETH non prevista
+    receive() external payable {
+        revert("Usa buyTickets per mandare ETH");
+    }
+
+    fallback() external payable {
+        revert();
     }
 }

@@ -67,15 +67,118 @@ describe("Lottery Contract", function () {
     it("Trasferisce il saldo del contratto al vincitore e resetta i biglietti", async function () {
       // Il manager chiama pickWinner
       const tx = await lottery.connect(manager).pickWinner();
-      await tx.wait();
+      const receipt = await tx.wait();
+
+      const iface = lottery.interface;
+      const logs = receipt.logs.map(log => iface.parseLog(log));
+      const winnerEvent = logs.find(log => log.name === "WinnerSelected");
+
+      expect(winnerEvent).to.not.be.undefined;
+      const winner = winnerEvent.args.winner;
+      const prize = winnerEvent.args.prize;
+
+      const pending = await lottery.pendingWithdrawals(winner);
+      expect(pending).to.equal(prize);
+
 
       // Verifica che l'array dei biglietti sia stato resettato
       const tickets = await lottery.getTickets();
       expect(tickets.length).to.equal(0);
 
-      // Con ethers v6, l'indirizzo del contratto è in lottery.target
+      // Verifica che il contratto abbia ancora i fondi (pull-payment pattern)
       const contractBalance = await ethers.provider.getBalance(lottery.target);
-      expect(contractBalance).to.equal(0);
+      expect(contractBalance).to.equal(prize);
     });
   });
+
+  describe("Funzione withdraw", function () {
+    let Lottery, lottery, manager, addr1, addr2;
+    const ticketPrice = ethers.parseEther("0.01");
+  
+    beforeEach(async function () {
+      [manager, addr1, addr2] = await ethers.getSigners();
+      Lottery = await ethers.getContractFactory("LotteryWithTickets");
+      lottery = await Lottery.connect(manager).deploy();
+      await lottery.waitForDeployment();
+    });
+  
+    it("Dovrebbe rifiutare il prelievo se non ci sono fondi disponibili", async function () {
+      await expect(lottery.connect(addr1).withdraw()).to.be.revertedWith("Nessun fondo da prelevare");
+    });
+  
+    it("Dovrebbe permettere al vincitore di prelevare i fondi", async function () {
+      // Acquisto biglietti
+      await lottery.connect(addr1).buyTickets({ value: ticketPrice });
+      await lottery.connect(addr2).buyTickets({ value: ethers.parseEther("0.02") });
+  
+      // Selezione vincitore
+      const tx = await lottery.connect(manager).pickWinner();
+      const receipt = await tx.wait();
+  
+      // Estrazione dell'evento WinnerSelected
+      const logs = receipt.logs
+        .map(log => {
+          try {
+            return lottery.interface.parseLog(log);
+          } catch {
+            return null;
+          }
+        })
+        .filter(log => log !== null);
+  
+      const winnerEvent = logs.find(log => log.name === "WinnerSelected");
+      expect(winnerEvent).to.not.be.undefined;
+  
+      const winner = winnerEvent.args.winner;
+      const prize = winnerEvent.args.prize;
+  
+      // Verifica che il vincitore possa prelevare
+      const initialBalance = await ethers.provider.getBalance(winner);
+      const withdrawTx = await lottery.connect(await ethers.getSigner(winner)).withdraw();
+      const withdrawReceipt = await withdrawTx.wait();
+      const gasUsed = BigInt(withdrawReceipt.gasUsed) * BigInt(withdrawTx.gasPrice);
+      const finalBalance = await ethers.provider.getBalance(winner);
+  
+      expect(finalBalance).to.equal(initialBalance + prize - gasUsed);
+  
+      // Verifica che i fondi siano stati azzerati
+      const pending = await lottery.pendingWithdrawals(winner);
+      expect(pending).to.equal(0);
+    });
+  
+    it("Dovrebbe impedire un doppio prelievo", async function () {
+      // Acquisto biglietti
+      await lottery.connect(addr1).buyTickets({ value: ticketPrice });
+      await lottery.connect(addr2).buyTickets({ value: ethers.parseEther("0.02") });
+  
+      // Selezione vincitore
+      const tx = await lottery.connect(manager).pickWinner();
+      const receipt = await tx.wait();
+  
+      // Estrazione dell'evento WinnerSelected
+      const logs = receipt.logs
+        .map(log => {
+          try {
+            return lottery.interface.parseLog(log);
+          } catch {
+            return null;
+          }
+        })
+        .filter(log => log !== null);
+  
+      const winnerEvent = logs.find(log => log.name === "WinnerSelected");
+      expect(winnerEvent).to.not.be.undefined;
+  
+      const winner = winnerEvent.args.winner;
+  
+      // Primo prelievo
+      await lottery.connect(await ethers.getSigner(winner)).withdraw();
+  
+      // Secondo prelievo dovrebbe fallire
+      await expect(
+        lottery.connect(await ethers.getSigner(winner)).withdraw()
+      ).to.be.revertedWith("Nessun fondo da prelevare");
+    });
+  });
+  
 });
