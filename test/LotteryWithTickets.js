@@ -69,8 +69,16 @@ describe("Lottery Contract", function () {
       const tx = await lottery.connect(manager).pickWinner();
       const receipt = await tx.wait();
 
-      const iface = lottery.interface;
-      const logs = receipt.logs.map(log => iface.parseLog(log));
+      // Estrazione dell'evento WinnerSelected
+      const logs = receipt.logs
+        .map(log => {
+          try {
+            return lottery.interface.parseLog(log);
+          } catch {
+            return null;
+          }
+        })
+        .filter(log => log !== null);
       const winnerEvent = logs.find(log => log.name === "WinnerSelected");
 
       expect(winnerEvent).to.not.be.undefined;
@@ -92,15 +100,7 @@ describe("Lottery Contract", function () {
   });
 
   describe("Funzione withdraw", function () {
-    let Lottery, lottery, manager, addr1, addr2;
-    const ticketPrice = ethers.parseEther("0.01");
-  
-    beforeEach(async function () {
-      [manager, addr1, addr2] = await ethers.getSigners();
-      Lottery = await ethers.getContractFactory("LotteryWithTickets");
-      lottery = await Lottery.connect(manager).deploy();
-      await lottery.waitForDeployment();
-    });
+    
   
     it("Dovrebbe rifiutare il prelievo se non ci sono fondi disponibili", async function () {
       await expect(lottery.connect(addr1).withdraw()).to.be.revertedWith("Nessun fondo da prelevare");
